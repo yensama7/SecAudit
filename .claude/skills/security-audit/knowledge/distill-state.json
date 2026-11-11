@@ -1,0 +1,9 @@
+{
+  "convergence_threshold": 15,
+  "sources": {
+    "sherlock": { "cursor": 16, "reports_seen": 16, "no_new_streak": 0, "converged": false,
+                  "parse_failures": [10] },
+    "cyfrin":   { "cursor": 225, "reports_seen": 225, "no_new_streak": 0, "converged": true,
+                  "note": "NON-DISTILLABLE: Cyfrin's public repo reports are attestation SUMMARIES only — individual findings are redacted ('Technical details of individual findings are omitted from this public summary'). Verified across indices 0,2,8,20,100,150,224 (2023-2026). Nothing to distill. Full reports are delivered privately to clients. Do not re-scan. Add Code4rena (full public findings) instead." }
+  }
+}

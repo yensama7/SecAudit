@@ -1,0 +1,33 @@
+# Historical audit report sources for the knowledge base.
+# type: git   -> cloned + every .md/.pdf parsed into findings
+# type: urls  -> individual markdown report URLs fetched directly
+#
+# Respect each source's license/reuse terms. We store provenance (source, report
+# title, URL) with every finding; we do not redistribute full reports.
+
+sources:
+  - name: sherlock
+    type: git
+    repo: https://github.com/sherlock-protocol/sherlock-reports.git
+    base_url: https://github.com/sherlock-protocol/sherlock-reports
+    license: see-repo
+
+  - name: cyfrin
+    type: git
+    repo: https://github.com/Cyfrin/cyfrin-audit-reports.git
+    base_url: https://github.com/Cyfrin/cyfrin-audit-reports
+    license: see-repo
+
+  # Code4rena reports live per-contest (code.code4rena.com / github). Add raw
+  # markdown report URLs here as you collect them.
+  - name: code4rena
+    type: urls
+    license: see-site
+    urls: []
+      # - https://raw.githubusercontent.com/code-423n4/<contest>/main/report.md
+
+  # OpenZeppelin security audits (openzeppelin.com/research). Add report URLs.
+  - name: openzeppelin
+    type: urls
+    license: see-site
+    urls: []

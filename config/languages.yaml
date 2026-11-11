@@ -1,0 +1,10 @@
+# Language / ecosystem config for discovery and methodology selection.
+languages:
+  solidity:
+    extensions: [".sol"]
+    ecosystems: [evm]
+    methodology: .claude/skills/security-audit/languages/solidity
+  rust:
+    extensions: [".rs"]
+    ecosystems: [solana, substrate, generic]
+    methodology: .claude/skills/security-audit/languages/rust

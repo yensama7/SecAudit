@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "audit-intel": {
+      "command": "python",
+      "args": ["intelligence-engine/mcp_server.py"]
+    }
+  }
+}

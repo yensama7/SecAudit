@@ -1,0 +1,7 @@
+storage/reports/
+storage/targets/
+intelligence-engine/knowledge.db*
+.security-audit/
+__pycache__/
+*.pyc
+.venv/

@@ -1,0 +1,6 @@
+# Core ingestion/retrieval is stdlib only (sqlite3 + FTS5).
+pyyaml>=6.0        # read config/sources.yaml
+pypdf>=4.0         # parse PDF reports in memory (lightweight; preferred PDF parser)
+# PyMuPDF>=1.24    # optional faster/better PDF parser; pypdf is the fallback and
+#                    installs where PyMuPDF's large wheel times out. Either works.
+mcp>=1.2           # legacy MCP server (optional; distilled knowledge is primary)
