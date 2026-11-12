@@ -21,17 +21,19 @@
   contract address, and a name/version (i.e. not EIP-712 `toTypedDataHash` with a
   domain separator). If the same contract is deployed on multiple chains (or the
   payload lacks a nonce/verifying-contract binding), a signature valid on one can
-  be replayed on another — or on a sibling contract.
+  be replayed on another — or on a sibling contract. Also: signatures with no
+  expiration/deadline field stay valid indefinitely.
 - **Root cause:** the signed digest isn't scoped to where it's meant to be used;
   domain (chainid + contract + nonce) is missing from what's signed.
 - **How it's fixed:** sign an EIP-712 typed-data hash that includes a domain
   separator (`chainId`, `verifyingContract`, name, version) and a per-use nonce;
-  reject digests that don't match the local domain. (Only skip if cross-chain
+  add an `expiration`/`deadline` field that is checked in the verifier and reject
+  digests that don't match the local domain. (Only skip if cross-chain
   replay is explicitly the intended "sign once, sync everywhere" behaviour.)
 - **Languages:** solidity
 - **Typical severity:** low–high (depends on what the signature authorizes and
   whether sibling deployments exist)
-- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.06.18%20-%20Final%20-%20Flux%20Follow-Up%20Audit%20Report.pdf
+- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.06.18%20-%20Final%20-%20Flux%20Follow-Up%20Audit%20Report.pdf ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.11.16%20-%20Final%20-%20NFTPort%20Audit%20Report.pdf (no chainId domain + no expiration; fixed by EIP-712 + deadline field)
 
 ### Security-critical parameter left out of the signed payload (MITM can alter it)
 - **Look for:** a function authorized by a signature where a value that controls
@@ -66,6 +68,28 @@
 - **Typical severity:** medium–high (replay of a sensitive action → fund loss)
 - **Seen also:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.11.10%20-%20Final%20-%20Astaria%20Audit%20Report.pdf (strategist nonce never checked → signed commitments cannot be cancelled)
 - **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.10.12%20-%20Final%20-%20Harpie%20Audit%20Report.pdf
+
+### `abi.encodePacked` with ≥2 dynamic args produces colliding hashes → guard bypassed
+- **Look for:** any `keccak256(abi.encodePacked(a, b, …))` where **two or more
+  arguments are dynamic types** (`string`, `bytes`, or dynamic arrays). Because
+  `encodePacked` strips length prefixes, `abi.encodePacked("a","bc")` and
+  `abi.encodePacked("ab","c")` produce the same byte sequence and therefore the
+  same hash. A `signedOnly`/`onlyAuthorized` modifier that reconstructs a digest
+  this way can be bypassed: the attacker picks values whose concatenation collides
+  with a legitimately-signed payload, without holding the private key.
+- **Root cause:** `abi.encodePacked` doesn't encode lengths for dynamic types, so
+  boundaries between adjacent dynamic args are ambiguous and collide-able.
+  `abi.encode` (the ABI-standard form) pads and length-prefixes each field,
+  making collisions impossible.
+- **How it's fixed:** use **EIP-712** `abi.encode` with a typed struct hash — it
+  includes per-field type information and length, preventing boundary ambiguity;
+  or accept only the already-hashed digest from the caller (hash off-chain, sign
+  that, pass the signed digest rather than raw inputs to the verifier). Never
+  `encodePacked` two adjacent dynamic-typed arguments that the signer doesn't
+  jointly control.
+- **Languages:** solidity
+- **Typical severity:** high (signature guard bypassed without the signing key)
+- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.11.16%20-%20Final%20-%20NFTPort%20Audit%20Report.pdf
 
 ### `ecrecover` returns `address(0)` for a bad signature, and a privileged slot defaults to `address(0)`
 - **Look for:** raw `ecrecover(hash, v, r, s)` whose result is compared to an

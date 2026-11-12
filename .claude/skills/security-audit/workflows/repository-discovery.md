@@ -7,10 +7,20 @@ mental model.
 1. Run `scripts/discover_sources.py <root>` — it walks the tree and classifies
    each `.sol`/`.rs` file as `in_scope`, `vendor`, `generated`, or `test` using
    path heuristics (see below). Read its JSON output.
-2. Sanity-check the classification against any scope definition the repo
-   provides: README, `scope.txt`, a contest page, `foundry.toml`/`Anchor.toml`
-   paths, remappings. If the repo says a file is in scope and the heuristic said
-   vendor, trust the repo — fix the inventory.
+2. **Read `scope.md` at the repo root first** (if it exists). This is the
+   user-supplied brief and it overrides all heuristics:
+   - **Product description** → understand what invariants matter and what the
+     protocol's intended behaviour is; use this to sharpen what counts as a bug.
+   - **In scope / Out of scope** → override the inventory: add any file the user
+     listed as in scope that the heuristic missed; mark any file listed as out of
+     scope as `excluded` even if the heuristic said `in_scope`.
+   - **Trusted roles / assumptions** → do not raise findings that require a
+     compromised or malicious instance of these roles.
+   - **Known / intentional behaviors** → skip these; do not raise them as findings.
+   - **Out-of-scope bug classes** → skip these entire categories.
+   Then sanity-check against any other scope definition the repo provides: README,
+   `scope.txt`, a contest page, `foundry.toml`/`Anchor.toml` paths, remappings.
+   The user's `scope.md` takes precedence over all of these.
 3. Detect the language(s) and framework: Foundry/Hardhat (Solidity),
    Anchor/native (Solana Rust). Note the compiler version and remappings.
 4. For the in-scope set, build the relationship map:

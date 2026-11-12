@@ -59,6 +59,50 @@
 - **Typical severity:** low–high (silent truncation → fund loss / locked feature)
 - **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.10.12%20-%20Final%20-%20Harpie%20Audit%20Report.pdf ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.11.09%20-%20Final%20-%20FIAT%20I%20Audit%20Report.pdf (uint88 cast with a check that runs after the cast)
 
+### Proportional N-way split floors each bucket → aggregate falls short of total
+- **Look for:** a function that splits a total amount across N recipients/paths
+  using the formula `bucket[i] = total * weight[i] / sumWeights` applied
+  independently to each `i`. Because each term floors, `Σ bucket[i] ≤ total`
+  with the shortfall equal to accumulated dust. If the last path is then
+  called with `bucket[N-1]` (the floor value) but downstream expects the
+  exact remainder, the protocol either (a) sends too little and the
+  `minReturn` check reverts, or (b) leaves unaccounted dust in the contract.
+  Tell: a split loop where each iteration computes `curAmount = curTotal *
+  w[i] / totalW` without special-casing the last iteration.
+- **Root cause:** independently flooring each proportional amount discards up
+  to N-1 dust units; the aggregate is strictly less than the input total.
+- **How it's fixed:** accumulate the sent amounts in a running sum; for the
+  last bucket use `remainder = total - sumPrevious` instead of the floored
+  formula — this guarantees `Σ = total` and needs no floating-point. Also
+  round all earlier buckets consistently (down or up) to avoid systematic bias.
+- **Languages:** solidity
+- **Typical severity:** low–medium (small dust loss per tx; reverts if a
+  strict `minReturn` is set)
+- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.12.12%20-%20Final%20-%20DODO%20Audit%20Report.pdf (M-2: `curAmount = curTotalAmount * weight / totalWeight` in split loop; last bucket underfunded by accumulated dust)
+
+### Divide-before-multiply: intermediate division truncates to zero when numerator << denominator
+- **Look for:** a compound expression that **divides first, then multiplies**:
+  `(a * 1e18 / b) * c / 1e18` or `(a / b) * c`. When `a << b` (the numerator of
+  the first division is much smaller than the denominator), the integer division
+  produces 0, and the subsequent multiplication is `0 * c = 0` — the whole
+  expression silently returns zero regardless of `c`. The equivalent expression
+  that avoids intermediate truncation is `a * c / b`. Canonical shapes: (a)
+  `amountScaled = (amount * 1e18 / totalSupply) * price / 1e18` where `amount` is
+  a small individual value and `totalSupply` is large; (b) `feeAdj / decimals * qty`
+  where `feeAdj` is never a full `decimals` multiple. EVM integer arithmetic
+  truncates at every `/` — the order of operations is load-bearing.
+- **Root cause:** mathematically correct on paper but integer-truncates to zero in
+  the EVM because `a / b` rounds down to 0 when `a < b`, discarding all precision
+  before the subsequent multiplication can recover it.
+- **How it's fixed:** reorder to **multiply before dividing**: `a * c / b`; use a
+  higher-precision intermediate type if the product might overflow (use
+  `mulDiv(a, c, b)` from FullMath/PRBMath or OZ `Math.mulDiv`); add a test with
+  small `a` values to catch this truncation case.
+- **Languages:** solidity
+- **Typical severity:** high (key quantity evaluates to zero — deposits fail,
+  collateral worth nothing, auctions always revert)
+- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.12.09%20-%20Final%20-%20Opyn%20Crab%20Netting%20Audit%20Report.pdf (M-1: `((a * 1e18 / b) * c) / 1e18` rounds to 0 for small `a`; fix is `(a * c) / b`) ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.12.27%20-%20Final%20-%20Nouns%20DAO%20Audit%20Report.pdf (M-1: `_recipientBalance` uses `elapsedTime * (MULT * tokenAmount / duration) / MULT` → unnecessary div-before-mul; fix: `elapsedTime * tokenAmount / duration`)
+
 ### Round-trip unit conversion loses 1 wei → downstream exact-amount check reverts
 - **Look for:** a value converted into another unit and back — e.g.
   `deltaNormalDebt = wdiv(addDebt, rate)` then later `deltaDebt = wmul(rate,

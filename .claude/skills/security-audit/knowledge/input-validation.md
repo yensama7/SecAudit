@@ -18,12 +18,16 @@
   explicit range/threshold checks on numeric params; validate array ordering/length
   invariants at every write site; reject inconsistent config combinations (or make
   the dependent path handle `address(0)` by paying the user directly rather than
-  escrowing to nowhere). Pair with the timelock + bounds in `access-control.md` for
-  privileged knobs.
+  escrowing to nowhere). **Apply the same validation in `initialize()` as in
+  `updateConfig()`** — a check in only the runtime-update path is bypassed on
+  first deploy. Also enforce **user-supplied time/duration bounds**: a `_unlockTime`
+  parameter should be capped at `block.timestamp + maxStakeBonusTime`; without it
+  an attacker passes a far-future timestamp to accumulate extreme staking bonuses.
+  Pair with the timelock + bounds in `access-control.md` for privileged knobs.
 - **Languages:** solidity
 - **Typical severity:** low–medium (robustness; escalates to fund-freeze / deposit DoS
   when a bad value bricks or strands funds)
-- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.06.02%20-%20Preliminary%20-%20Perennial%20Audit%20Report.pdf ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.11.04%20-%20Final%20-%20Merit%20Circle%20Audit%20Report.pdf (non-monotonic curve underflow; escrowPortion>0 with escrowPool==address(0) freezes rewards)
+- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.06.02%20-%20Preliminary%20-%20Perennial%20Audit%20Report.pdf ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.11.04%20-%20Final%20-%20Merit%20Circle%20Audit%20Report.pdf (non-monotonic curve underflow; escrowPortion>0 with escrowPool==address(0) freezes rewards) ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.11.16%20-%20Final%20-%20NFTPort%20Audit%20Report.pdf (royalty cap checked in `updateConfig` but not in `initialize`) ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.12.01%20-%20Final%20-%20Frankendao%20Audit%20Report.pdf (unbounded `_unlockTime` allows attacker to claim enormous `stakedTimeBonus`) ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.12.27%20-%20Final%20-%20Nouns%20DAO%20Audit%20Report.pdf (M-2: `stopTime` not validated > `block.timestamp`; M-3: `tokenAmount >= stopTime - startTime` check embeds an 18-decimal assumption — WBTC 8-decimal streams are blocked)
 
 ### Zero-default id/sentinel passes a validity check against an uninitialized struct
 - **Look for:** struct lookups validated by `require(items[id].id == id)` (or
@@ -41,7 +45,7 @@
   from a field value.
 - **Languages:** solidity
 - **Typical severity:** low–medium (depends on what an uninitialized struct enables)
-- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.06.27%20-%20Final%20-%20Lyra%20Audit%20Report.pdf
+- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.06.27%20-%20Final%20-%20Lyra%20Audit%20Report.pdf ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.12.12%20-%20Final%20-%20BullvBear%20Audit%20Report.pdf (H-1: `reclaimContract` reads `bulls[contractId]` which is `address(0)` for a never-matched order — attacker passes a fake order to drain funds to `address(0)`; H-2: `transferPosition(to=address(0))` explicitly resets `bulls[contractId]` to zero, allowing the duplicate-match guard `require(bulls[id] == address(0))` to pass again — fix: key the guard on a separate `matchedOrders` mapping that the user cannot reset)
 
 ### Caller-supplied value that the contract could derive is accepted unverified
 - **Look for:** a function parameter that represents a quantity the contract
@@ -69,7 +73,7 @@
 - **Languages:** solidity
 - **Typical severity:** low–high (safe if the current consumer ignores it, but
   fatal — fund theft — if any module/integrator trusts it)
-- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.08.24%20-%20Final%20-%20LiquiFi%20Audit%20Report.pdf ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.11.09%20-%20Final%20-%20FIAT%20I%20Audit%20Report.pdf (unbond guard keyed on caller-supplied value/nonce)
+- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.08.24%20-%20Final%20-%20LiquiFi%20Audit%20Report.pdf ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.11.09%20-%20Final%20-%20FIAT%20I%20Audit%20Report.pdf (unbond guard keyed on caller-supplied value/nonce) ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.12.08%20-%20Final%20-%20Buffer%20Finance%20Audit%20Report.pdf (H-1: `resolveQueuedTrades` uses caller-supplied `asset` to validate a price sig but never checks it matches `queuedTrade.asset` → attacker uses a cross-asset price sig to open options at advantageous strikes)
 
 ### Inverted condition when migrating `require(cond)` to `if (!cond) revert Error()`
 - **Look for:** a refactor that replaced `require` statements with custom-error
@@ -113,7 +117,33 @@
 - **Languages:** solidity
 - **Typical severity:** low–high (a disabled safety check; impact = whatever the
   check was protecting)
-- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.10.18%20-%20Final%20-%20Sentiment%20Audit%20Report.pdf
+- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.10.18%20-%20Final%20-%20Sentiment%20Audit%20Report.pdf ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2023.01.24%20-%20Final%20-%20Lyra%20Audit%20Report.pdf (H-5: `updateCollateral()` has no guard against existing pending orders — called repeatedly, each call overwrites `pendingOrderKey` → old orders become untrackable and uncancellable → protocol can be stuffed with many irrevocable pending hedge positions)
+
+### Only-zero guard on partial resource fulfillment — insufficient-but-nonzero amount bypasses downstream safety invariant
+
+- **Look for:** a function that requests a resource (collateral, liquidity, tokens)
+  from an external pool or module. The function guards the returned amount against
+  `== 0` (reverting), but **does not** check whether the partial (non-zero) amount is
+  *sufficient* to maintain the downstream safety constraint (maximum leverage, minimum
+  viable collateral, slippage tolerance). Any positive dust amount passes the guard and
+  updates state, potentially pushing the system into an unsafe configuration the guard
+  was meant to prevent.
+  Concrete shapes: (a) `if (collateralReceived == 0) revert` but no leverage re-check
+  after partial fill; (b) `amountOut > 0` but no `amountOut >= minAmountOut` check;
+  (c) `received > 0` but no test against a minimum-safe threshold before creating a
+  levered position.
+- **Root cause:** the guard was written to handle the trivial "nothing came back" edge
+  case, not the more dangerous "not enough came back" case; the downstream invariant is
+  never re-validated against the actual received amount.
+- **How it's fixed:** after a partial fulfillment, **re-derive and check** the
+  downstream safety invariant using the actual received amount — e.g. compute resulting
+  leverage and revert if it exceeds the maximum (`if (resultingLeverage > maxLeverage)
+  revert InsufficientCollateral()`); do not proceed when a reduced resource level would
+  push the system into the unsafe zone the guard was meant to protect against.
+- **Languages:** solidity
+- **Typical severity:** high (position opened with unsafe leverage → liquidated shortly
+  after → protocol loses the hedge / collateral)
+- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2023.01.24%20-%20Final%20-%20Lyra%20Audit%20Report.pdf (H-1: `_increasePosition` guards `collateralDelta == 0` → revert but accepts any positive dust; when LP has insufficient liquidity, received collateral can be far below target → resulting leverage is too high → position gets liquidated by GMX → protocol's hedge is lost)
 
 ### Hardcoded 4-byte selector encodes version-specific calldata / default args
 - **Look for:** an integration allowlist that stores raw function selectors

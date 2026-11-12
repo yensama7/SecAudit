@@ -55,6 +55,29 @@
 - **Typical severity:** medium–high (unexpected loss of user value/rewards)
 - **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.11.04%20-%20Final%20-%20Merit%20Circle%20Audit%20Report.pdf
 
+### Validate-on-raw-then-transform: check passes the raw input but the transform rounds it into the invalid range
+- **Look for:** a function that **validates** a user-supplied value and then
+  **normalizes/rounds** it — in that order. The check runs on the pre-transform
+  value and the action runs on the post-transform value. If the normalization can
+  move a "just-valid" input into an invalid range, the check is effectively
+  bypassed. Classic shape: a time/expiry check (`if (expiry < block.timestamp)
+  revert`) followed by a rounding step (`expiry = roundDown(expiry, 1 days)`)
+  that can round a timestamp from 1 second in the future down to a timestamp from
+  hours ago — the check saw "future" but the stored/used value is "past." Same
+  class: a `minPrice` check on a raw amount before a fee is applied, or a
+  collateral sufficiency check before an interest-accrual step.
+- **Root cause:** the validation and the data transformation use different
+  representations of the same value; the invariant must hold for the **consumed
+  form**, not the input form.
+- **How it's fixed:** **normalize first, then validate** — perform the same
+  rounding/transformation the downstream will use, then check the result against
+  the invariant. The validation must operate on the same value that will be
+  stored/acted on.
+- **Languages:** solidity
+- **Typical severity:** high (invariant guaranteed by a check that doesn't apply
+  to what's actually used — e.g. expired bond tokens minted as if unexpired)
+- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.11.29%20-%20Final%20-%20Bond%20Protocol%20Audit%20Report.pdf
+
 ### Dynamic array reordered on removal, but elements referenced by stored index
 - **Look for:** a dynamic array whose removal path **reorders** it — `delete` +
   shorten, or swap-last-into-gap + `pop()` (`arr[i] = arr[arr.length-1]; arr.pop()`)

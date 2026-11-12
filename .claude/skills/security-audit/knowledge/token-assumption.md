@@ -16,7 +16,7 @@
 - **Languages:** solidity
 - **Typical severity:** low–high (scales with whether non-standard tokens can
   actually reach the path and whether funds are escrowed)
-- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.02.09%20-%20Final%20-%20Tempus%20Audit%20Report.pdf ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.07.05%20-%20Final%20-%20Opyn%20Squeeth%20Crab%20V2%20Audit%20Report.pdf (approve/transferFrom return ignored; fee-on-transfer unsupported) ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.11.10%20-%20Final%20-%20Astaria%20Audit%20Report.pdf (ERC4626 vault breaks on fee-on-transfer underlying; a claim path transfers amount 0 which reverts for some tokens)
+- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.02.09%20-%20Final%20-%20Tempus%20Audit%20Report.pdf ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.07.05%20-%20Final%20-%20Opyn%20Squeeth%20Crab%20V2%20Audit%20Report.pdf (approve/transferFrom return ignored; fee-on-transfer unsupported) ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.11.10%20-%20Final%20-%20Astaria%20Audit%20Report.pdf (ERC4626 vault breaks on fee-on-transfer underlying; a claim path transfers amount 0 which reverts for some tokens) ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.12.08%20-%20Final%20-%20Buffer%20Finance%20Audit%20Report.pdf (M-4: fee-on-transfer token makes `totalPremium` accounting wrong; M-5: raw `transfer`/`approve` without SafeERC20 — USDT returns no bool → reverts on success) ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.12.12%20-%20Final%20-%20BullvBear%20Audit%20Report.pdf (M-1: fee-on-transfer token causes shortfall when settling/reclaiming; fix: balance delta measurement) ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.12.12%20-%20Final%20-%20DODO%20Audit%20Report.pdf (M-1: raw `transferFrom` without SafeERC20 — USDT-style tokens that return no bool revert on success) ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.12.12%20-%20Final%20-%20Telcoin%20Audit%20Report.pdf (M-2: `transferFrom`/`approve` without SafeERC20 — also `approve(nonZero)` on a non-zero allowance reverts for USDT)
 
 ### Rebasing / airdrop-accruing token held via fixed share accounting → gains mis-assigned
 - **Look for:** a protocol that custodies a user's token and tracks it as a fixed
@@ -38,6 +38,28 @@
 - **Typical severity:** low–medium (misappropriated yield/airdrop; not usually a
   direct principal loss)
 - **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.10.18%20-%20Final%20-%20Sentiment%20Audit%20Report.pdf
+
+### Two-address / proxy token bypasses an address-equality exclusion guard
+- **Look for:** a guard that excludes "the protocol's own token" (or any
+  disallowed token) using `tokenAddress == address(configuredToken)`. Tokens
+  built on a proxy/delegate pattern (e.g. Synthetix `ProxyERC20` / `sUSD`,
+  `sBTC`) have **two addresses**: the proxy and the underlying implementation.
+  If `configuredToken` is set to one address but the caller passes the other,
+  the equality check fails → the guard is bypassed. Canonical exploit: a
+  `rescueERC20(altAddress)` call drains the stream's locked funds because the
+  guard only blocked `rescueERC20(mainAddress)`.
+- **Root cause:** a unique-token assumption embedded in an `==` address
+  comparison; proxy-pattern tokens can reach the same balance via a different
+  address.
+- **How it's fixed:** instead of an address-equality guard, use a **balance
+  check** — record the token balance before and after the rescue transfer and
+  `require` it hasn't decreased (or hasn't decreased by more than `surplus`);
+  alternatively, enumerate all known aliases of the token at the guard. For
+  the stream use-case: allow rescue of the stream token only up to the amount
+  above `remainingBalance`.
+- **Languages:** solidity
+- **Typical severity:** high (all locked/escrowed stream funds drainable)
+- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.12.27%20-%20Final%20-%20Nouns%20DAO%20Audit%20Report.pdf (M-4: `rescueERC20` guard `tokenAddress == address(token())` bypassed with Synthetix ProxyERC20 alternate address)
 
 ### Misusing standard ERC20 transfer semantics (self-`transferFrom`, transfer to `address(0)`)
 - **Look for:** code that moves a contract's **own** tokens with

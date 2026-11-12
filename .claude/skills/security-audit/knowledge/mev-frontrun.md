@@ -21,7 +21,30 @@
   the current snapshot.
 - **Languages:** solidity
 - **Typical severity:** medium–high (theft of a large fraction of each distribution)
-- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.11.04%20-%20Final%20-%20Merit%20Circle%20Audit%20Report.pdf
+- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.11.04%20-%20Final%20-%20Merit%20Circle%20Audit%20Report.pdf ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2023.01.22%20-%20Final%20-%20Perennial%20December%20Update%20Audit%20Report.pdf (M-2: synchronous vault atop asynchronous underlying — attacker front-runs price-settlement tx, deposits to capture PnL, exits right after) ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2023.01.24%20-%20Final%20-%20Lyra%20Audit%20Report.pdf (M-2: attacker back-runs a large `initiateDeposit` with `processDepositQueue() + settleExpiredBoard()` in one tx — processing the deposit temporarily inflates NAV which raises `longScaleFactor` → board payouts favor the attacker at the expense of other boards)
+
+### Same-block flashloan gaming of checkpoint/snapshot-based weights
+- **Look for:** a staking/governance/reward system that records a user's
+  balance as an on-chain checkpoint and later queries it with `getAtBlock(N)`.
+  If the checkpoint library returns the **first** entry in block N (rather than
+  the last), an attacker can: (1) flashloan a large token amount, (2) stake in
+  the same block (creates checkpoint[0] = high), (3) exit in the same block
+  (creates checkpoint[1] = 0), (4) repay the flashloan — all in one tx. When
+  the system later calls `getAtBlock(N)` it reads checkpoint[0] (the high value)
+  rather than the final checkpoint[1], crediting the attacker with a stake they
+  never held past that block. Even without a checkpoint bug, **same-block**
+  stake+exit lets anyone game systems that read the snapshot of block N at the
+  *start* of block N+1 without a lock.
+- **Root cause:** snapshot taken at a block height the attacker can influence
+  within one transaction; no requirement that stake persists until the next block.
+- **How it's fixed:** require that exits are in a **later block** than the entry
+  (`require(block.number > lastStakeBlock)`); use the **latest** checkpoint for
+  current-block queries, not an earliest-in-block lookup; or move to
+  time-weighted-average balance (can't be gamed in one block). Audit `getAtBlock`
+  / `getPriorVotes` for same-block edge cases.
+- **Languages:** solidity
+- **Typical severity:** medium (fake stake captures reward share; slashing avoidance)
+- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.12.12%20-%20Final%20-%20Telcoin%20Audit%20Report.pdf (M-1: OZ Checkpoints `getAtBlock` returns first same-block entry; flashloan stake→exit in one block fakes high snapshot)
 
 ### Self-front-run a permissionless slash/dispute to dodge the bond penalty
 - **Look for:** a bond/stake-backed honesty mechanism where a **permissionless**
@@ -44,4 +67,4 @@
   early) so griefing is less effective.
 - **Languages:** solidity
 - **Typical severity:** medium–high (bond deterrent neutralized → bad data accepted)
-- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.11.09%20-%20Final%20-%20FIAT%20I%20Audit%20Report.pdf
+- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.11.09%20-%20Final%20-%20FIAT%20I%20Audit%20Report.pdf ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.12.12%20-%20Final%20-%20Telcoin%20Audit%20Report.pdf (M-5: `slash()` is permissionless → malicious staker frontruns it with `fullClaimAndExit()` to leave with their funds before the penalty lands)

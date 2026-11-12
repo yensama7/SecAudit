@@ -15,7 +15,7 @@
   already-settled state so an external poke can't change the outcome.
 - **Languages:** solidity
 - **Typical severity:** medium–high (unexpected liquidation / value extraction)
-- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.06.02%20-%20Preliminary%20-%20Perennial%20Audit%20Report.pdf ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.11.10%20-%20Final%20-%20Astaria%20Audit%20Report.pdf (`_deleteLienPosition`/`transferWithdrawReserve`/`LiquidationAccountant.claim` callable by anyone → lien removal, repeated reserve transfer, forced value drop)
+- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.06.02%20-%20Preliminary%20-%20Perennial%20Audit%20Report.pdf ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.11.10%20-%20Final%20-%20Astaria%20Audit%20Report.pdf (`_deleteLienPosition`/`transferWithdrawReserve`/`LiquidationAccountant.claim` callable by anyone → lien removal, repeated reserve transfer, forced value drop) ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.12.09%20-%20Final%20-%20Opyn%20Crab%20Netting%20Audit%20Report.pdf (H-4: `checkOrder()` is public and calls `_useNonce()` → anyone can burn the nonce of any pending order before the auction uses it, preventing legitimate auctions) ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2023.01.24%20-%20Final%20-%20Sentiment%20December%20Update%20Audit%20Report.pdf (M-1: `ConvexRewardPool.getReward(address)` callable by anyone — an attacker continuously claims rewards on behalf of a victim account; since rewards are only added to Sentiment's asset list when claimed via AccountManager, the external claim bypasses accounting → victim's total assets are under-counted → unfair liquidation)
 
 ### Privileged role changes critical params instantly (no timelock, EOA-ownable)
 - **Look for:** `onlyOwner`/`onlyAdmin` setters for fees, maintenance ratios,
@@ -31,7 +31,7 @@
   require a multisig (never an EOA) for the owner role.
 - **Languages:** solidity
 - **Typical severity:** low–medium (centralization risk; impact depends on the knob)
-- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.06.02%20-%20Preliminary%20-%20Perennial%20Audit%20Report.pdf
+- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.06.02%20-%20Preliminary%20-%20Perennial%20Audit%20Report.pdf ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.12.09%20-%20Final%20-%20Opyn%20Crab%20Netting%20Audit%20Report.pdf (M-3: users can't withdraw until admin calls auction functions — no timeout escape hatch; a lost/malicious admin key permanently locks user funds) ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2023.01.22%20-%20Final%20-%20Perennial%20December%20Update%20Audit%20Report.pdf (M-1: `productOwner` can lower `makerLimit` at any time → vault's `_adjustPosition` underflows and reverts → rebalancing permanently broken)
 
 ### Inconsistent authorization across sibling entry points (one checks the caller, the twin doesn't)
 - **Look for:** several functions that reach the same privileged internal action
@@ -69,6 +69,51 @@
 - **Typical severity:** low–medium (no emergency response when needed; impact
   surfaces only during an incident)
 - **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.08.24%20-%20Final%20-%20LiquiFi%20Audit%20Report.pdf
+
+### Role-freeze mechanism defeated by `hasRole()` override granting catch-all bypass
+- **Look for:** a contract that overrides `hasRole(role, account)` to return
+  `true` for **any** `role` if `account` holds a "super" role (e.g.
+  `ADMIN_ROLE`). The override is meant to simplify checks, but the base-class
+  `grantRole`/`revokeRole` themselves call `hasRole(adminRole, msg.sender)` for
+  authorization — so the override inadvertently lets `ADMIN_ROLE` holders call
+  the base `grantRole`/`revokeRole` directly, bypassing any freeze/lock the
+  protocol built on top. Tell: `function hasRole(bytes32 role, address account)
+  public view virtual override returns (bool) { return
+  super.hasRole(ADMIN_ROLE, account) || super.hasRole(role, account); }` —
+  the first OR arm grants universal role power.
+- **Root cause:** the override conflates "can call protected functions" with
+  "has any specific role"; the base class's internal auth calls flow through
+  the same `hasRole`, so the super-role bypass leaks into base-class role
+  management.
+- **How it's fixed:** also override `grantRole`/`revokeRole` to enforce the
+  freeze state (or just revert when frozen); do **not** rely on a catch-all
+  `hasRole` bypass — scope the override narrowly to the functions that need it,
+  and explicitly block the base role-management paths when roles are frozen.
+- **Languages:** solidity
+- **Typical severity:** high (intended security guarantee (frozen roles) is
+  completely defeated; ADMIN_ROLE retains permanent control)
+- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.11.16%20-%20Final%20-%20NFTPort%20Audit%20Report.pdf
+
+### Caller-supplied `from`/owner in periphery exploits prior user approval → token drain
+- **Look for:** a periphery/helper contract that accepts a **caller-supplied
+  `from` address** and uses it as the owner when pulling assets it has been
+  approved to move (e.g. `vault.withdraw(amount, address(this), from)` or
+  `token.transferFrom(from, ...)`). If the UI always instructs users to do
+  `vault.approve(periphery, type(uint256).max)`, any third party can supply
+  `from = victim` and drain Alice's entire approved balance — either directly
+  or by front-running her tx. The issue is that the approver and the initiator
+  are decoupled.
+- **Root cause:** the function should only be callable on the caller's own
+  balance; accepting an arbitrary `from` turns the approval into a global
+  "anyone can drain me" permission.
+- **How it's fixed:** replace the `from` parameter with `msg.sender`
+  everywhere the periphery pulls from the user; never accept an
+  attacker-controllable `from` address for asset-moving operations; if
+  delegation is needed, use an explicit opt-in allowance check (`require(from
+  == msg.sender || periphery.hasPermission(from, msg.sender))`).
+- **Languages:** solidity
+- **Typical severity:** high (direct theft of all tokens a user approved)
+- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.11.28%20-%20Final%20-%20Rage%20Trade%20Audit%20Report.pdf
 
 ### Allowlist enforced at the front door but bypassed via a side entry into the same state
 - **Look for:** a whitelist/eligibility check (`isCollateralAllowed`,

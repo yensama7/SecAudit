@@ -4,19 +4,25 @@
 - **Look for:** a call like `(, int256 price, , , ) = aggregator.latestRoundData();`
   that destructures away `updatedAt` and `answeredInRound` (the commas) and uses
   `price` directly. No check that the round completed or is fresh. Also watch for
-  missing `price > 0` checks and hardcoded feed/ENS addresses.
+  missing `price > 0` checks and hardcoded feed/ENS addresses. For **L2
+  deployments** (Arbitrum, Optimism): also check for the L2 sequencer uptime
+  feed — if the sequencer is down, Chainlink returns the last known price as if
+  fresh; without an uptime check a user can borrow/liquidate at stale prices.
 - **Root cause:** trusting the oracle return without validating the round — a
   stale or incomplete round returns a last-known or zero value the protocol then
-  treats as current.
+  treats as current. On L2, the sequencer being offline creates the same stale-data
+  window without the round being technically incomplete.
 - **How it's fixed:** capture `roundId`, `updatedAt`, `answeredInRound` and
   `require(updatedAt != 0, "round not complete")`,
   `require(answeredInRound >= roundId, "stale price")`, and `require(price > 0)`;
   consider a max-staleness window. Inject feed addresses via constructor, not
-  hardcoded constants.
+  hardcoded constants. On L2, add a sequencer-uptime check using the Chainlink
+  L2 sequencer feed (see Chainlink docs "L2 sequencer feeds") and revert if the
+  sequencer is not live or the grace period after restart has not elapsed.
 - **Languages:** solidity
 - **Typical severity:** low–high (here low — the feed was only used for stats;
   severity scales with how load-bearing the price is)
-- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.02.09%20-%20Final%20-%20Tempus%20Audit%20Report.pdf ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.06.06%20-%20Final%20-%20Flux%20Audit%20Report.pdf ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.10.18%20-%20Final%20-%20Sentiment%20Audit%20Report.pdf
+- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.02.09%20-%20Final%20-%20Tempus%20Audit%20Report.pdf ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.06.06%20-%20Final%20-%20Flux%20Audit%20Report.pdf ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.10.18%20-%20Final%20-%20Sentiment%20Audit%20Report.pdf ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2023.01.21%20-%20Final%20-%20Sentiment%20January%20Update%20Audit%20Report.pdf (M-4: GLP oracle on Arbitrum does not check L2 sequencer uptime — stale prices served when sequencer is down) ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2023.01.22%20-%20Final%20-%20Perennial%20December%20Update%20Audit%20Report.pdf (M-3: custom `sync()` wrapping Chainlink reverts on underflow when multiple aggregator phases are skipped — permanently freezes price-dependent protocol; M-4/M-5: empty phase has `endingRoundId=0` → `roundCount` returns 1 instead of 0 → oracle version incorrect)
 
 ### Submitted/aggregated answers stamped "fresh" without a signed per-answer timestamp
 - **Look for:** a first-party / push oracle where off-chain signers submit
@@ -55,7 +61,7 @@
   registration if the code truly only supports 8.
 - **Languages:** solidity
 - **Typical severity:** high (mispriced collateral → protocol drain)
-- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.10.18%20-%20Final%20-%20Sentiment%20Audit%20Report.pdf ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.11.10%20-%20Final%20-%20Astaria%20Audit%20Report.pdf (arithmetic assumes the underlying token always has 18 decimals)
+- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.10.18%20-%20Final%20-%20Sentiment%20Audit%20Report.pdf ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.11.10%20-%20Final%20-%20Astaria%20Audit%20Report.pdf (arithmetic assumes the underlying token always has 18 decimals) ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.11.28%20-%20Final%20-%20Rage%20Trade%20Audit%20Report.pdf (`minTokenOut` calculated in USDC 6-decimal terms, applied to WETH/WBTC 18-decimal tokens → slippage protection is ~1e12× weaker than intended) ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.12.09%20-%20Final%20-%20Opyn%20Crab%20Netting%20Audit%20Report.pdf (H-1: `feeAdjustment` has 18 decimals but is used as a plain integer divisor without `/1e18` → `_debtToMint` returns near-zero → deposit auction always fails)
 
 ### Spot exchange-rate / `previewRedeem` used as a price → single-block manipulation
 - **Look for:** an oracle that derives a price from an instantaneous on-chain
@@ -77,7 +83,7 @@
   assets whose exit value is slippage/loss-sensitive).
 - **Languages:** solidity
 - **Typical severity:** high (borrow against inflated collateral / unfair liquidation)
-- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.10.18%20-%20Final%20-%20Sentiment%20Audit%20Report.pdf
+- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.10.18%20-%20Final%20-%20Sentiment%20Audit%20Report.pdf ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2023.01.21%20-%20Final%20-%20Sentiment%20January%20Update%20Audit%20Report.pdf (M-5: `previewRedeem(address)` called with `address(0)` instead of the actual account → returns non-partner default fee → under-prices collateral → unfair liquidations)
 
 ### Gameable aggregation: permissionless submit lets an attacker pick the answer subset
 - **Look for:** an aggregate (median/mean) computed from whatever signed answers

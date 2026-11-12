@@ -42,7 +42,7 @@
 - **Languages:** solidity
 - **Typical severity:** medium–high (direct loss of user funds, over-mint, or DoS of
   a circuit breaker)
-- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.06.27%20-%20Final%20-%20Lyra%20Audit%20Report.pdf ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.11.04%20-%20Final%20-%20Merit%20Circle%20Audit%20Report.pdf (increaseLock reads depositsOf[msg.sender] instead of depositsOf[_receiver])
+- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.06.27%20-%20Final%20-%20Lyra%20Audit%20Report.pdf ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.11.04%20-%20Final%20-%20Merit%20Circle%20Audit%20Report.pdf (increaseLock reads depositsOf[msg.sender] instead of depositsOf[_receiver]) ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.12.01%20-%20Final%20-%20Frankendao%20Audit%20Report.pdf (H-4: `_unstake` removes votes from `msg.sender` instead of `owner` when third-party calls via approval; H-4 also increments wrong counter: `proposalsCreated` incremented where `proposalsPassed` should be in `queue()`)
 
 ### Missing one-to-one / uniqueness invariant lets one backing asset cover many claims
 - **Look for:** a system where a unit of collateral/backing (a vaulted NFT, a
@@ -140,7 +140,83 @@
   with the decimals-assumption cue in `oracle-manipulation.md`.
 - **Languages:** both
 - **Typical severity:** high (systematic value leak to the fee recipient / drain)
-- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.11.10%20-%20Final%20-%20Astaria%20Audit%20Report.pdf
+- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.11.10%20-%20Final%20-%20Astaria%20Audit%20Report.pdf ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.11.28%20-%20Final%20-%20Rage%20Trade%20Audit%20Report.pdf (MAX_BPS = 1000 instead of 10_000 makes slippage 10× worse than intended)
+
+### Unstake/burn recomputes user value from current parameters instead of storing the original
+- **Look for:** a stake/lock/deposit that computes a derived amount from live
+  parameters (`multiplier`, `baseVotes`, `rate`, `rewardPerShare`) and adds it
+  to a user balance — but the **unstake/unlock/withdraw** path re-runs the same
+  formula with the **current** (possibly changed) parameters and subtracts the
+  newly computed value. If an admin updates the multiplier between stake and
+  unstake, the subtracted amount ≠ the added amount: an increase causes
+  arithmetic underflow (uint revert → user's tokens permanently locked); a
+  decrease silently leaves the user with inflated balance. Tell: `stake` calls
+  `getTokenVotingPower(id)` (which reads `monsterMultiplier`) and adds to
+  `votesFromOwnedTokens`; `unstake` also calls `getTokenVotingPower(id)` using
+  the same live multiplier rather than a stored snapshot.
+- **Root cause:** the "delta applied at stake time" and "delta removed at
+  unstake time" must be the same value, but the system recomputes instead of
+  storing; any intervening parameter change breaks the symmetry.
+- **How it's fixed:** store the original computed delta in a per-user/per-token
+  mapping at stake time (`stakedVotingPower[tokenId] = computedAmount`), and use
+  that stored value — not a fresh computation — when reversing the operation. This
+  makes stake/unstake symmetric regardless of parameter changes.
+- **Languages:** solidity
+- **Typical severity:** high (token/NFT permanently locked on underflow; or
+  inflated votes/shares when parameter decreases)
+- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.12.01%20-%20Final%20-%20Frankendao%20Audit%20Report.pdf
+
+### Balance-delta measurement uses wrong asset representation for external-call receive-amount
+- **Look for:** a "balance before / after" pattern that measures received amount
+  from an external call (aggregator swap, yield-harvester, liquidation) using a
+  *different* token than what the external call actually returns. Classic case:
+  `toTokenBalanceBefore = IERC20(WETH).balanceOf(this)` → external call →
+  `received = IERC20(WETH).balanceOf(this) - toTokenBalanceBefore`, but the
+  external call (a DEX aggregator, Paraswap, etc.) **unwraps WETH to native ETH**
+  as its final step — WETH delta is 0 even though ETH was received. Variants:
+  measuring aToken balance for a path that returns the underlying, measuring
+  vault-share balance for a path that redeems to base asset, measuring one side
+  of a wrapper pair when the other was used.
+- **Root cause:** the protocol assumes the external call will settle in one
+  specific form (WETH), but the integratee's internal path wraps/unwraps it to a
+  different representation (native ETH); the measurement picks the wrong token to
+  observe.
+- **How it's fixed:** either (a) measure the actual representation the
+  integratee returns (e.g. use `address(this).balance` for ETH settlement), or
+  (b) instruct/constrain the external call to settle in the form you measure (add
+  a `require(toToken != ETH_ADDRESS)` for WETH-measuring paths), or (c) measure
+  *both* representations and sum them. Document which forms each aggregator
+  returns and add integration tests against the real target.
+- **Languages:** solidity
+- **Typical severity:** high (computed receive amount = 0 → minimum-out check
+  reverts, or entire swap silently yields nothing to the protocol)
+- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.12.12%20-%20Final%20-%20DODO%20Audit%20Report.pdf (M-3: `externalSwap` measures WETH balance delta, but Paraswap's `swapOnUniswapV2Fork` unwraps WETH to native ETH → delta 0 → `receiveAmount = 0`) ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2023.01.24%20-%20Final%20-%20Lyra%20Audit%20Report.pdf (H-3: `hedgeDelta()` computes `collateralDelta` to pass to GMX's `decreasePosition`, but doesn't subtract the negative-PnL adjustment that GMX internally deducts from effective collateral before applying the delta → delta exceeds the adjusted collateral → `decreasePosition` reverts → hedge permanently broken)
+
+### Async request submits asset transfer immediately but accounting variable only catches up on execution — stale-NAV window
+
+- **Look for:** any two-phase async protocol flow (GMX PositionRouter, async
+  oracle-keeper, cross-chain request) where: (1) the protocol **transfers assets
+  out** of its main accounting pool immediately when the request is *submitted*, and
+  (2) the **accounting variable** that represents those assets in pool valuation
+  (e.g. `usedDeltaLiquidity`, `pendingCollateral`) is only updated when the async
+  request *executes* — a potentially later transaction. During the gap the pool's NAV
+  calculation sees a reduced on-chain balance (the assets are gone) but the accounting
+  variable hasn't caught up → NAV appears deflated. An attacker times a large LP
+  deposit into this window to mint shares at the artificial low price. Inverse: if the
+  accounting variable is credited on submission but the asset isn't sent until
+  execution, NAV is transiently inflated.
+- **Root cause:** the pool's NAV invariant (`assets = balance + accountingVar`) holds
+  in steady state but is broken transiently: the balance side is updated immediately on
+  submission while the accounting side lags to the execution callback.
+- **How it's fixed:** on **submission** immediately add the pending outflow to the
+  accounting variable (e.g. query the pending router amount via
+  `_getPendingIncreaseCollateralDelta()` and include it in `usedDeltaLiquidity`); on
+  **execution** confirm/settle the final amount. Never let an asset transfer leave a
+  window where the pool's computed NAV is lower than its economic value.
+- **Languages:** solidity
+- **Typical severity:** medium (share price manipulation via timed deposit; loss
+  proportional to attack capital and pending-order time window)
+- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2023.01.24%20-%20Final%20-%20Lyra%20Audit%20Report.pdf (H-2: `updateCollateral()` sends quote to GMX hedger immediately but only updates `usedDeltaLiquidity` when the GMX order executes → NAV appears deflated during the pending window → attacker deposits into LP to mint extra shares at suppressed token price)
 
 ### State-unwinding path (cancel / close) forgets to return escrowed funds
 - **Look for:** an escrow/auction/offer flow where the "happy path" refunds or
@@ -160,4 +236,4 @@
   standing bidder's balance is made whole on every exit.
 - **Languages:** solidity
 - **Typical severity:** high (bidder/depositor funds lost or collateral locked)
-- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.11.10%20-%20Final%20-%20Astaria%20Audit%20Report.pdf
+- **Seen in:** https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.11.10%20-%20Final%20-%20Astaria%20Audit%20Report.pdf ; https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2022.12.27%20-%20Final%20-%20Nouns%20DAO%20Audit%20Report.pdf (M-7: `rescueERC20` forbids stream token entirely — over-funded stream can only be drained by canceling; fix: allow rescue of surplus above `remainingBalance`)
